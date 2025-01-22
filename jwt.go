@@ -10,22 +10,26 @@ import (
 	"reflect"
 )
 
-// Ошибки
+// Общие ошибки
 var (
-	errNotAStruct = errors.New("payload must be a struct")
+	ErrNotAStruct      = errors.New("payload must be a struct")
+	ErrFailedHeader    = errors.New("failed to encode header")
+	ErrFailedPayload   = errors.New("failed to encode payload")
+	ErrFailedSignature = errors.New("failed to generate signature")
 )
 
-// JWT структура
+// JWT представляет структуру JSON Web Token.
 type JWT struct {
 	Header    Header
 	Payload   any
 	Signature Signature
 }
 
-// Конструктор для JWT
+// New создаёт новый объект JWT.
+// Проверяет, чтобы payload был структурой.
 func New(h Header, p any, s Signature) (*JWT, error) {
 	if !isStruct(p) {
-		return nil, errNotAStruct
+		return nil, ErrNotAStruct
 	}
 	return &JWT{
 		Header:    h,
@@ -34,7 +38,7 @@ func New(h Header, p any, s Signature) (*JWT, error) {
 	}, nil
 }
 
-// Вспомогательная функция для проверки структуры
+// isStruct проверяет, является ли значение структурой.
 func isStruct(v any) bool {
 	if v == nil {
 		return false
@@ -42,57 +46,51 @@ func isStruct(v any) bool {
 	return reflect.ValueOf(v).Kind() == reflect.Struct
 }
 
-// Метод для генерации JWT-токена
+// Generate создаёт подписанный JWT-токен в формате `header.payload.signature`.
 func (j *JWT) Generate() (string, error) {
 	// Сериализация заголовка
 	headerBytes, err := j.Header.Bytes()
 	if err != nil {
-		return "", fmt.Errorf("failed to encode header: %w", err)
+		return "", fmt.Errorf("%w: %v", ErrFailedHeader, err)
 	}
 
 	// Сериализация payload
 	payloadBytes, err := json.Marshal(j.Payload)
 	if err != nil {
-		return "", fmt.Errorf("failed to encode payload: %w", err)
+		return "", fmt.Errorf("%w: %v", ErrFailedPayload, err)
 	}
 
-	// Задание кодера
+	// Кодирование в Base64URL без паддинга
 	base64Encoder := base64.URLEncoding.WithPadding(base64.NoPadding)
-
-	// Базовая кодировка токена
 	headerEncoded := base64Encoder.EncodeToString(headerBytes)
 	payloadEncoded := base64Encoder.EncodeToString(payloadBytes)
 
 	// Создание подписи
 	signature, err := j.Signature.Hash([]byte(headerEncoded), []byte(payloadEncoded))
 	if err != nil {
-		return "", fmt.Errorf("failed to generate signature: %w", err)
+		return "", fmt.Errorf("%w: %v", ErrFailedSignature, err)
 	}
 	signatureEncoded := base64Encoder.EncodeToString(signature)
 
+	// Формирование JWT-токена
 	return fmt.Sprintf("%s.%s.%s", headerEncoded, payloadEncoded, signatureEncoded), nil
 }
 
+// Equal сравнивает два JWT-токена на равенство (без учёта подписи).
 func (j *JWT) Equal(other *JWT) bool {
-	if j.Header.Alg != other.Header.Alg {
+	if j.Header.Alg != other.Header.Alg || j.Header.Typ != other.Header.Typ {
 		return false
 	}
-	if j.Header.Typ != other.Header.Typ {
-		return false
-	}
-	if !reflect.DeepEqual(j.Payload, other.Payload) {
-		return false
-	}
-	return true
+	return reflect.DeepEqual(j.Payload, other.Payload)
 }
 
-// Структура Header
+// Header представляет заголовок JWT.
 type Header struct {
-	Alg string `json:"alg"`
-	Typ string `json:"typ"`
+	Alg string `json:"alg"` // Алгоритм подписи
+	Typ string `json:"typ"` // Тип токена
 }
 
-// Конструктор Header
+// NewHeader создаёт новый Header с заданным алгоритмом и типом.
 func NewHeader(alg, typ string) Header {
 	return Header{
 		Alg: alg,
@@ -100,26 +98,26 @@ func NewHeader(alg, typ string) Header {
 	}
 }
 
-// Метод для преобразования Header в JSON
+// Bytes сериализует заголовок в JSON.
 func (h Header) Bytes() ([]byte, error) {
 	return json.Marshal(h)
 }
 
-// Интерфейс Signature
+// Signature интерфейс, представляющий алгоритм подписи JWT.
 type Signature interface {
 	Hash(header, payload []byte) ([]byte, error)
 }
 
-// HS256 реализация Signature
+// HS256Signature реализует алгоритм подписи HMAC-SHA256.
 type HS256Signature struct {
-	Secret string
+	Secret string // Секретный ключ для подписи
 }
 
-// Метод Hash для HS256
+// Hash вычисляет HMAC-SHA256 для заголовка и payload.
 func (s HS256Signature) Hash(header, payload []byte) ([]byte, error) {
-	// Конкатенация данных
+	// Формирование строки данных для подписи
 	data := fmt.Sprintf("%s.%s", header, payload)
-	// Генерация подписи
+	// Вычисление HMAC-SHA256
 	h := hmac.New(sha256.New, []byte(s.Secret))
 	h.Write([]byte(data))
 	return h.Sum(nil), nil
